@@ -1,165 +1,126 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
+import uvicorn
 import logging
-from pathlib import Path
-from pydantic import BaseModel, Field
-from typing import List, Optional
-import uuid
 from datetime import datetime, timedelta
-import jwt
-import bcrypt
-from enum import Enum
+from typing import Optional, List, Dict, Any
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse, FileResponse
+from contextlib import asynccontextmanager
+import asyncio
+from loguru import logger
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+# Import our modules
+from .config import settings, get_settings
+from .database import init_database, close_database, get_db_service, db_service
+from .models import *
+from .utils import *
+from .ai_service import ai_service
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# Configure logging
+logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
+logger.add(
+    "logs/school_nexus.log",
+    rotation="500 MB",
+    retention="30 days",
+    level=settings.LOG_LEVEL
+)
 
-# Create the main app without a prefix
-app = FastAPI()
+# Initialize Sentry for error tracking
+if settings.SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        integrations=[FastApiIntegration()],
+        traces_sample_rate=0.1,
+    )
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
-
-# JWT Configuration
-JWT_SECRET = "school-nexus-secret-key-2024"
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_HOURS = 24
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
 
 # Security
 security = HTTPBearer()
 
-# Enums
-class UserRole(str, Enum):
-    SUPER_ADMIN = "super_admin"
-    SCHOOL_ADMIN = "school_admin"
-    STAFF = "staff"
-    STUDENT = "student"
-    PARENT = "parent"
 
-class SchoolStatus(str, Enum):
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-    SUSPENDED = "suspended"
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events"""
+    # Startup
+    logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
+    
+    # Initialize database
+    await init_database()
+    
+    # Initialize AI service if enabled
+    if settings.ENABLE_AI_FEATURES:
+        try:
+            # AI service is already initialized in __init__
+            logger.info("AI service initialized")
+        except Exception as e:
+            logger.warning(f"AI service initialization failed: {e}")
+    
+    logger.info("Application startup complete")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down application")
+    await close_database()
+    logger.info("Application shutdown complete")
 
-# Data Models
-class User(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    email: str
-    password_hash: str
-    full_name: str
-    role: UserRole
-    school_id: Optional[str] = None  # None for super_admin
-    is_active: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-class School(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    email: str
-    phone: Optional[str] = None
-    address: Optional[str] = None
-    logo_url: Optional[str] = None
-    status: SchoolStatus = SchoolStatus.ACTIVE
-    subscription_plan: str = "basic"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-    admin_user_id: Optional[str] = None
+# Create FastAPI app
+app = FastAPI(
+    title=settings.APP_NAME,
+    version=settings.APP_VERSION,
+    description="Multi-tenant AI-powered School Management System",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+)
 
-# Request/Response Models
-class UserCreate(BaseModel):
-    email: str
-    password: str
-    full_name: str
-    role: UserRole
-    school_id: Optional[str] = None
+# Add middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-class UserLogin(BaseModel):
-    email: str
-    password: str
+if not settings.DEBUG:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
-class UserResponse(BaseModel):
-    id: str
-    email: str
-    full_name: str
-    role: UserRole
-    school_id: Optional[str] = None
-    is_active: bool
-    created_at: datetime
+# Rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-class SchoolCreate(BaseModel):
-    name: str
-    email: str
-    phone: Optional[str] = None
-    address: Optional[str] = None
-    admin_full_name: str
-    admin_email: str
-    admin_password: str
+# Custom exception handler
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.detail,
+            "timestamp": datetime.utcnow().isoformat(),
+            "path": str(request.url)
+        }
+    )
 
-class SchoolResponse(BaseModel):
-    id: str
-    name: str
-    email: str
-    phone: Optional[str] = None
-    address: Optional[str] = None
-    logo_url: Optional[str] = None
-    status: SchoolStatus
-    subscription_plan: str
-    created_at: datetime
-    admin_user_id: Optional[str] = None
 
-class LoginResponse(BaseModel):
-    access_token: str
-    token_type: str
-    user: UserResponse
-
-class DashboardStats(BaseModel):
-    total_schools: int = 0
-    active_schools: int = 0
-    total_users: int = 0
-    total_students: int = 0
-
-# Utility Functions
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-
-def create_access_token(data: dict) -> str:
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
-    return encoded_jwt
-
-def decode_access_token(token: str) -> dict:
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return payload
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token expired"
-        )
-    except jwt.JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
-        )
-
-# Authentication Dependencies
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+# Dependencies
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Any = Depends(get_db_service)
+) -> User:
+    """Get current authenticated user"""
     token = credentials.credentials
-    payload = decode_access_token(token)
+    payload = verify_token(token)
     user_id = payload.get("user_id")
     
     if not user_id:
@@ -168,16 +129,21 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             detail="Invalid token"
         )
     
-    user_data = await db.users.find_one({"id": user_id})
-    if not user_data:
+    user = await db.get_by_id(User, user_id)
+    if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
+            detail="User not found or inactive"
         )
     
-    return User(**user_data)
+    # Update last login
+    await db.update(User, user_id, last_login=datetime.utcnow())
+    
+    return user
 
-async def get_super_admin(current_user: User = Depends(get_current_user)):
+
+async def get_super_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Require super admin access"""
     if current_user.role != UserRole.SUPER_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -185,39 +151,98 @@ async def get_super_admin(current_user: User = Depends(get_current_user)):
         )
     return current_user
 
-async def get_school_admin(current_user: User = Depends(get_current_user)):
+
+async def get_school_admin_or_above(current_user: User = Depends(get_current_user)) -> User:
+    """Require school admin or super admin access"""
     if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.SCHOOL_ADMIN]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="School admin access required"
+            detail="Admin access required"
         )
     return current_user
 
-# Initialize Super Admin
-async def create_super_admin():
-    existing_admin = await db.users.find_one({"role": UserRole.SUPER_ADMIN})
-    if not existing_admin:
-        super_admin = User(
-            email="admin@schoolnexus.com",
-            password_hash=hash_password("admin123"),
-            full_name="Super Administrator",
-            role=UserRole.SUPER_ADMIN,
-            school_id=None
-        )
-        await db.users.insert_one(super_admin.dict())
-        logging.info("Super admin created: admin@schoolnexus.com / admin123")
 
-# Auth Routes
-@api_router.post("/auth/login", response_model=LoginResponse)
-async def login(credentials: UserLogin):
-    user_data = await db.users.find_one({"email": credentials.email})
-    if not user_data:
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": settings.APP_VERSION,
+        "database": settings.DATABASE_TYPE
+    }
+
+
+# Setup Wizard Endpoints
+@app.get("/api/setup/status")
+async def get_setup_status():
+    """Check if initial setup is completed"""
+    return {"setup_completed": settings.SETUP_COMPLETED}
+
+
+@app.post("/api/setup/initialize")
+async def initialize_system(setup_data: Dict[str, Any]):
+    """Initialize system with database and super admin"""
+    if settings.SETUP_COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System already initialized"
+        )
+    
+    try:
+        # Update database configuration
+        db_config = setup_data.get("database", {})
+        if db_config:
+            # This would typically update environment variables
+            # For now, we'll assume the configuration is already set
+            pass
+        
+        # Initialize database
+        await init_database()
+        
+        # Update super admin if provided
+        admin_data = setup_data.get("admin", {})
+        if admin_data:
+            # Update super admin details
+            existing_admin = await db_service.get_by_email(User, settings.SUPER_ADMIN_EMAIL)
+            if existing_admin:
+                await db_service.update(
+                    User,
+                    existing_admin.id,
+                    full_name=admin_data.get("full_name", "Super Administrator"),
+                    email=admin_data.get("email", settings.SUPER_ADMIN_EMAIL)
+                )
+        
+        # Mark setup as completed
+        # In a real application, this would update a config file or environment
+        
+        return {"message": "System initialized successfully"}
+        
+    except Exception as e:
+        logger.error(f"Setup initialization failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Setup initialization failed"
+        )
+
+
+# Authentication Endpoints
+@app.post("/api/auth/login", response_model=LoginResponse)
+@limiter.limit("5/minute")
+async def login(
+    request,
+    credentials: UserLogin,
+    db: Any = Depends(get_db_service)
+):
+    """User login"""
+    user = await db.get_by_email(User, credentials.email)
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials"
         )
     
-    user = User(**user_data)
     if not verify_password(credentials.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -230,7 +255,11 @@ async def login(credentials: UserLogin):
             detail="Account is inactive"
         )
     
-    access_token = create_access_token({"user_id": user.id, "role": user.role})
+    # Create access token
+    token_data = {"user_id": user.id, "role": user.role.value}
+    access_token = create_access_token(token_data)
+    
+    # Create response
     user_response = UserResponse(
         id=user.id,
         email=user.email,
@@ -238,6 +267,8 @@ async def login(credentials: UserLogin):
         role=user.role,
         school_id=user.school_id,
         is_active=user.is_active,
+        email_verified=user.email_verified,
+        last_login=user.last_login,
         created_at=user.created_at
     )
     
@@ -247,8 +278,10 @@ async def login(credentials: UserLogin):
         user=user_response
     )
 
-@api_router.get("/auth/me", response_model=UserResponse)
+
+@app.get("/api/auth/me", response_model=UserResponse)
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    """Get current user information"""
     return UserResponse(
         id=current_user.id,
         email=current_user.email,
@@ -256,33 +289,51 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
         role=current_user.role,
         school_id=current_user.school_id,
         is_active=current_user.is_active,
+        email_verified=current_user.email_verified,
+        last_login=current_user.last_login,
         created_at=current_user.created_at
     )
 
-# Super Admin Routes
-@api_router.get("/admin/dashboard", response_model=DashboardStats)
-async def get_admin_dashboard(current_user: User = Depends(get_super_admin)):
-    total_schools = await db.schools.count_documents({})
-    active_schools = await db.schools.count_documents({"status": SchoolStatus.ACTIVE})
-    total_users = await db.users.count_documents({})
-    total_students = await db.users.count_documents({"role": UserRole.STUDENT})
+
+@app.post("/api/auth/refresh")
+async def refresh_token(current_user: User = Depends(get_current_user)):
+    """Refresh access token"""
+    token_data = {"user_id": current_user.id, "role": current_user.role.value}
+    new_token = create_access_token(token_data)
     
-    return DashboardStats(
-        total_schools=total_schools,
-        active_schools=active_schools,
-        total_users=total_users,
-        total_students=total_students
-    )
+    return {"access_token": new_token, "token_type": "bearer"}
 
-@api_router.get("/admin/schools", response_model=List[SchoolResponse])
-async def get_all_schools(current_user: User = Depends(get_super_admin)):
-    schools = await db.schools.find().to_list(1000)
-    return [SchoolResponse(**school) for school in schools]
 
-@api_router.post("/admin/schools", response_model=SchoolResponse)
-async def create_school(school_data: SchoolCreate, current_user: User = Depends(get_super_admin)):
+# Super Admin Endpoints
+@app.get("/api/admin/dashboard", response_model=DashboardStats)
+async def get_admin_dashboard(
+    current_user: User = Depends(get_super_admin),
+    db: Any = Depends(get_db_service)
+):
+    """Get super admin dashboard statistics"""
+    stats = await db.get_school_stats()
+    return DashboardStats(**stats)
+
+
+@app.get("/api/admin/schools", response_model=List[SchoolResponse])
+async def get_all_schools(
+    current_user: User = Depends(get_super_admin),
+    db: Any = Depends(get_db_service)
+):
+    """Get all schools"""
+    schools = await db.get_all(School)
+    return [SchoolResponse.from_orm(school) for school in schools]
+
+
+@app.post("/api/admin/schools", response_model=SchoolResponse)
+async def create_school(
+    school_data: SchoolCreate,
+    current_user: User = Depends(get_super_admin),
+    db: Any = Depends(get_db_service)
+):
+    """Create new school"""
     # Check if school email already exists
-    existing_school = await db.schools.find_one({"email": school_data.email})
+    existing_school = await db.get_by_email(School, school_data.email)
     if existing_school:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -290,7 +341,7 @@ async def create_school(school_data: SchoolCreate, current_user: User = Depends(
         )
     
     # Check if admin email already exists
-    existing_admin = await db.users.find_one({"email": school_data.admin_email})
+    existing_admin = await db.get_by_email(User, school_data.admin_email)
     if existing_admin:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -298,114 +349,348 @@ async def create_school(school_data: SchoolCreate, current_user: User = Depends(
         )
     
     # Create school
-    school = School(
+    school = await db.create(
+        School,
         name=school_data.name,
         email=school_data.email,
         phone=school_data.phone,
-        address=school_data.address
+        address=school_data.address,
+        subscription_plan=school_data.subscription_plan,
+        status=SchoolStatus.ACTIVE
     )
     
     # Create school admin user
-    admin_user = User(
+    admin_user = await db.create(
+        User,
         email=school_data.admin_email,
         password_hash=hash_password(school_data.admin_password),
         full_name=school_data.admin_full_name,
         role=UserRole.SCHOOL_ADMIN,
-        school_id=school.id
+        school_id=school.id,
+        is_active=True,
+        email_verified=True
     )
     
-    # Save to database
-    await db.schools.insert_one(school.dict())
-    await db.users.insert_one(admin_user.dict())
+    # Update school with admin user ID
+    await db.update(School, school.id, admin_user_id=admin_user.id, total_users=1)
     
-    # Update school with admin user id
-    school.admin_user_id = admin_user.id
-    await db.schools.update_one(
-        {"id": school.id},
-        {"$set": {"admin_user_id": admin_user.id}}
-    )
-    
-    return SchoolResponse(**school.dict())
+    return SchoolResponse.from_orm(school)
 
-# School Admin Routes
-@api_router.get("/school/dashboard", response_model=DashboardStats)
-async def get_school_dashboard(current_user: User = Depends(get_school_admin)):
-    school_id = current_user.school_id
-    if not school_id:
-        # Super admin accessing school dashboard
-        return DashboardStats()
-    
-    total_users = await db.users.count_documents({"school_id": school_id})
-    total_students = await db.users.count_documents({"school_id": school_id, "role": UserRole.STUDENT})
-    total_staff = await db.users.count_documents({"school_id": school_id, "role": UserRole.STAFF})
-    
-    return DashboardStats(
-        total_schools=1,
-        active_schools=1,
-        total_users=total_users,
-        total_students=total_students
-    )
 
-@api_router.get("/school/users", response_model=List[UserResponse])
-async def get_school_users(current_user: User = Depends(get_school_admin)):
-    school_id = current_user.school_id
-    if not school_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="School access required"
-        )
-    
-    users = await db.users.find({"school_id": school_id}).to_list(1000)
-    return [UserResponse(
-        id=user["id"],
-        email=user["email"],
-        full_name=user["full_name"],
-        role=user["role"],
-        school_id=user["school_id"],
-        is_active=user["is_active"],
-        created_at=user["created_at"]
-    ) for user in users]
-
-@api_router.get("/school/info", response_model=SchoolResponse)
-async def get_school_info(current_user: User = Depends(get_school_admin)):
-    school_id = current_user.school_id
-    if not school_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="School access required"
-        )
-    
-    school_data = await db.schools.find_one({"id": school_id})
-    if not school_data:
+@app.put("/api/admin/schools/{school_id}", response_model=SchoolResponse)
+async def update_school(
+    school_id: str,
+    school_data: SchoolUpdate,
+    current_user: User = Depends(get_super_admin),
+    db: Any = Depends(get_db_service)
+):
+    """Update school"""
+    school = await db.get_by_id(School, school_id)
+    if not school:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="School not found"
         )
     
-    return SchoolResponse(**school_data)
+    # Update school
+    updated_school = await db.update(School, school_id, **school_data.dict(exclude_unset=True))
+    return SchoolResponse.from_orm(updated_school)
 
-# Include the router in the main app
-app.include_router(api_router)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# School Admin Endpoints
+@app.get("/api/school/dashboard", response_model=DashboardStats)
+async def get_school_dashboard(
+    current_user: User = Depends(get_school_admin_or_above),
+    db: Any = Depends(get_db_service)
+):
+    """Get school dashboard statistics"""
+    school_id = current_user.school_id if current_user.role != UserRole.SUPER_ADMIN else None
+    stats = await db.get_school_stats(school_id)
+    return DashboardStats(**stats)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
-@app.on_event("startup")
-async def startup_event():
-    await create_super_admin()
+@app.get("/api/school/info", response_model=SchoolResponse)
+async def get_school_info(
+    current_user: User = Depends(get_school_admin_or_above),
+    db: Any = Depends(get_db_service)
+):
+    """Get school information"""
+    if current_user.role == UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Super admin has no associated school"
+        )
+    
+    school = await db.get_by_id(School, current_user.school_id)
+    if not school:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="School not found"
+        )
+    
+    return SchoolResponse.from_orm(school)
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+
+@app.get("/api/school/users", response_model=List[UserResponse])
+async def get_school_users(
+    current_user: User = Depends(get_school_admin_or_above),
+    db: Any = Depends(get_db_service)
+):
+    """Get school users"""
+    if current_user.role == UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Super admin cannot access school users directly"
+        )
+    
+    users = await db.get_all(User, school_id=current_user.school_id)
+    return [UserResponse.from_orm(user) for user in users]
+
+
+@app.post("/api/school/users", response_model=UserResponse)
+async def create_school_user(
+    user_data: UserCreate,
+    current_user: User = Depends(get_school_admin_or_above),
+    db: Any = Depends(get_db_service)
+):
+    """Create new school user"""
+    # Check if email already exists
+    existing_user = await db.get_by_email(User, user_data.email)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User with this email already exists"
+        )
+    
+    # Create user
+    user = await db.create(
+        User,
+        email=user_data.email,
+        password_hash=hash_password(user_data.password),
+        full_name=user_data.full_name,
+        role=user_data.role,
+        school_id=current_user.school_id,
+        phone=user_data.phone,
+        is_active=True
+    )
+    
+    # Update school user count
+    school = await db.get_by_id(School, current_user.school_id)
+    if school:
+        await db.update(School, school.id, total_users=school.total_users + 1)
+    
+    return UserResponse.from_orm(user)
+
+
+# AI Endpoints
+@app.post("/api/ai/chat", response_model=AIMessageResponse)
+@limiter.limit("30/minute")
+async def ai_chat(
+    request,
+    message_data: AIMessageRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Chat with AI assistant"""
+    if not settings.ENABLE_AI_FEATURES:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI features are disabled"
+        )
+    
+    try:
+        response = await ai_service.process_message(
+            message=message_data.message,
+            user=current_user,
+            conversation_id=message_data.conversation_id,
+            voice_data=message_data.voice_data
+        )
+        
+        return AIMessageResponse(**response)
+        
+    except Exception as e:
+        logger.error(f"AI chat error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="AI service error"
+        )
+
+
+@app.post("/api/ai/voice")
+@limiter.limit("10/minute")
+async def process_voice(
+    request,
+    audio: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    """Process voice input"""
+    if not settings.ENABLE_VOICE_FEATURES:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Voice features are disabled"
+        )
+    
+    try:
+        # Read audio data
+        audio_data = await audio.read()
+        
+        # Process with AI service
+        response = await ai_service.process_message(
+            message="",
+            user=current_user,
+            voice_data=audio_data
+        )
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Voice processing error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Voice processing error"
+        )
+
+
+# Document Generation Endpoints
+@app.post("/api/documents/generate")
+async def generate_document(
+    doc_request: DocumentRequest,
+    current_user: User = Depends(get_current_user),
+    db: Any = Depends(get_db_service)
+):
+    """Generate document"""
+    try:
+        # Generate document using AI service
+        document_data = await ai_service.generate_document(
+            document_type=doc_request.document_type,
+            user=current_user,
+            template_data=doc_request.template_data
+        )
+        
+        if not document_data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Document generation failed"
+            )
+        
+        # Save document record
+        document = await db.create(
+            Document,
+            school_id=current_user.school_id,
+            user_id=doc_request.user_id or current_user.id,
+            title=doc_request.title,
+            document_type=doc_request.document_type,
+            template_data=doc_request.template_data,
+            file_url=document_data  # Base64 encoded PDF
+        )
+        
+        return {
+            "document_id": document.id,
+            "document_url": document_data,
+            "title": doc_request.title,
+            "type": doc_request.document_type.value
+        }
+        
+    except Exception as e:
+        logger.error(f"Document generation error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document generation failed"
+        )
+
+
+# File Upload Endpoints
+@app.post("/api/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    """Upload file"""
+    try:
+        # Validate file
+        file_size = len(await file.read())
+        await file.seek(0)  # Reset file pointer
+        
+        validation = FileValidator.validate_document(file.filename, file_size)
+        if not validation["valid"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=validation["errors"]
+            )
+        
+        # Generate unique filename
+        unique_filename = generate_unique_filename(file.filename, current_user.id)
+        
+        # Save file (this is a simplified version - in production you'd use cloud storage)
+        file_path = f"uploads/{unique_filename}"
+        
+        # For now, we'll just return the file info
+        return {
+            "filename": unique_filename,
+            "original_filename": file.filename,
+            "size": file_size,
+            "content_type": file.content_type,
+            "upload_url": f"/api/files/{unique_filename}"
+        }
+        
+    except Exception as e:
+        logger.error(f"File upload error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="File upload failed"
+        )
+
+
+# Notification Endpoints
+@app.post("/api/notifications")
+async def create_notification(
+    notification_data: NotificationRequest,
+    current_user: User = Depends(get_school_admin_or_above),
+    db: Any = Depends(get_db_service)
+):
+    """Create notification"""
+    try:
+        # Create notification
+        notification = await db.create(
+            Notification,
+            school_id=current_user.school_id,
+            title=notification_data.title,
+            message=notification_data.message,
+            notification_type=notification_data.notification_type,
+            role_filter=notification_data.role_filter,
+            send_email=notification_data.send_email,
+            send_sms=notification_data.send_sms
+        )
+        
+        # TODO: Implement notification delivery
+        
+        return {"notification_id": notification.id, "status": "created"}
+        
+    except Exception as e:
+        logger.error(f"Notification creation error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Notification creation failed"
+        )
+
+
+# System Statistics
+@app.get("/api/system/stats")
+async def get_system_stats(current_user: User = Depends(get_super_admin)):
+    """Get system-wide statistics"""
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "uptime": "System running",
+        "database_type": settings.DATABASE_TYPE,
+        "ai_enabled": settings.ENABLE_AI_FEATURES,
+        "voice_enabled": settings.ENABLE_VOICE_FEATURES
+    }
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "server:app",
+        host=settings.HOST,
+        port=settings.PORT,
+        reload=settings.RELOAD,
+        log_level=settings.LOG_LEVEL.lower()
+    )
