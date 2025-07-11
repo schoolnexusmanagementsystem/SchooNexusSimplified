@@ -45,27 +45,15 @@ export enum NotificationType {
 export interface User {
   id: string;
   email: string;
-  full_name: string;
-  role: UserRole;
-  school_id?: string;
-  is_active: boolean;
-  email_verified: boolean;
-  last_login?: string;
-  created_at: string;
+  first_name: string;
+  last_name: string;
   phone?: string;
-  avatar_url?: string;
-  date_of_birth?: string;
-  address?: string;
-  student_id?: string;
-  admission_number?: string;
-  class_id?: string;
-  parent_contact?: string;
-  employee_id?: string;
-  department?: string;
-  position?: string;
-  preferences?: Record<string, any>;
-  notification_settings?: Record<string, any>;
-  two_fa_enabled?: boolean;
+  role: UserRole;
+  school?: School;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  two_factor_enabled?: boolean;
 }
 
 // School Interface
@@ -109,12 +97,19 @@ export interface DashboardStats {
 export interface LoginRequest {
   email: string;
   password: string;
+  school_code: string;
+}
+
+export interface TwoFactorRequest {
+  temp_token: string;
+  code: string;
 }
 
 export interface LoginResponse {
   access_token: string;
-  token_type: string;
   user: User;
+  requires_2fa?: boolean;
+  temp_token?: string;
 }
 
 export interface SchoolCreateRequest {
@@ -147,9 +142,18 @@ export interface UserUpdateRequest {
 
 // AI Types
 export interface AIMessage {
-  role: 'user' | 'assistant' | 'system';
+  id: string;
   content: string;
-  timestamp: string;
+  isUser: boolean;
+  timestamp: Date;
+  type: 'text' | 'error' | 'system';
+  suggestions?: string[];
+}
+
+export interface VoiceRecordingState {
+  isRecording: boolean;
+  isProcessing: boolean;
+  transcript: string;
 }
 
 export interface AIConversation {
@@ -251,6 +255,26 @@ export interface SetupData {
     name: string;
     logo?: string;
   };
+}
+
+export interface DatabaseConfig {
+  database_type: 'postgresql' | 'mysql' | 'supabase' | 'mongodb';
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  database_name: string;
+  supabase_url?: string;
+  supabase_key?: string;
+}
+
+export interface SuperAdminConfig {
+  email: string;
+  password: string;
+  confirm_password: string;
+  first_name: string;
+  last_name: string;
+  phone?: string;
 }
 
 // Class and Subject Types

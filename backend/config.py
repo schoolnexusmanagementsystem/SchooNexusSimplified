@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: Optional[str] = None
     TWILIO_WHATSAPP_NUMBER: Optional[str] = None
     
+    # Bot Integration Settings
+    TELEGRAM_ENABLED: bool = True
+    WHATSAPP_ENABLED: bool = True
+    WHATSAPP_APP_SECRET: str = ""
+    WHATSAPP_VERIFY_TOKEN: str = ""
+    
     # Redis (Caching & Sessions)
     REDIS_URL: Optional[str] = "redis://localhost:6379"
     REDIS_TTL: int = 3600

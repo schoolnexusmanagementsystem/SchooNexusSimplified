@@ -87,6 +87,13 @@ class School(Base):
     whatsapp_number = Column(String(50))
     ai_enabled = Column(Boolean, default=True)
     
+    # Bot Integration
+    telegram_enabled = Column(Boolean, default=False)
+    telegram_bot_token = Column(String, nullable=True)
+    whatsapp_enabled = Column(Boolean, default=False)
+    whatsapp_access_token = Column(String, nullable=True)
+    whatsapp_phone_id = Column(String, nullable=True)
+    
     # Usage tracking
     total_users = Column(Integer, default=0)
     storage_used_mb = Column(Float, default=0.0)

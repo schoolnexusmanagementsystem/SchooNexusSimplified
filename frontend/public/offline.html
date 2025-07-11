@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Offline - School Nexus</title>
+    <meta name="description" content="You are currently offline. School Nexus will sync when connection is restored.">
+    
+    <!-- Theme colors -->
+    <meta name="theme-color" content="#2563eb">
+    <meta name="msapplication-navbutton-color" content="#2563eb">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    
+    <!-- Preload key resources -->
+    <link rel="preload" href="/icons/icon-192x192.png" as="image">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 3rem 2rem;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            max-width: 500px;
+            margin: 1rem;
+            animation: slideUp 0.6s ease-out;
+        }
+        
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .logo {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 2rem;
+            box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.3);
+        }
+        
+        .logo svg {
+            width: 40px;
+            height: 40px;
+            fill: white;
+        }
+        
+        h1 {
+            font-size: 2rem;
+            color: #1f2937;
+            margin-bottom: 1rem;
+            font-weight: 700;
+        }
+        
+        .status {
+            background: linear-gradient(135deg, #fef3c7, #fde68a);
+            border: 1px solid #f59e0b;
+            border-radius: 12px;
+            padding: 1rem;
+            margin: 2rem 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+        
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            background: #f59e0b;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+        
+        .message {
+            font-size: 1.1rem;
+            color: #4b5563;
+            margin-bottom: 2rem;
+        }
+        
+        .features {
+            background: #f9fafb;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin: 2rem 0;
+            text-align: left;
+        }
+        
+        .features h3 {
+            color: #1f2937;
+            margin-bottom: 1rem;
+            text-align: center;
+            font-size: 1.1rem;
+        }
+        
+        .features ul {
+            list-style: none;
+            space: 0.5rem;
+        }
+        
+        .features li {
+            display: flex;
+            align-items: center;
+            padding: 0.5rem 0;
+            color: #6b7280;
+        }
+        
+        .features li::before {
+            content: "✓";
+            color: #10b981;
+            font-weight: bold;
+            margin-right: 0.75rem;
+            font-size: 1.1rem;
+        }
+        
+        .actions {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            margin-top: 2rem;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            color: white;
+            border: none;
+            padding: 1rem 2rem;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.3);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        .btn-secondary {
+            background: #f3f4f6;
+            color: #374151;
+            border: 1px solid #d1d5db;
+        }
+        
+        .btn-secondary:hover {
+            background: #e5e7eb;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        
+        .connection-info {
+            background: #f0f9ff;
+            border: 1px solid #0ea5e9;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 2rem;
+            font-size: 0.9rem;
+            color: #0c4a6e;
+        }
+        
+        .footer {
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid #e5e7eb;
+            color: #9ca3af;
+            font-size: 0.9rem;
+        }
+        
+        @media (max-width: 640px) {
+            .container {
+                padding: 2rem 1.5rem;
+                margin: 0.5rem;
+            }
+            
+            h1 {
+                font-size: 1.75rem;
+            }
+            
+            .logo {
+                width: 60px;
+                height: 60px;
+            }
+            
+            .logo svg {
+                width: 30px;
+                height: 30px;
+            }
+        }
+        
+        /* Dark mode support */
+        @media (prefers-color-scheme: dark) {
+            .container {
+                background: rgba(31, 41, 55, 0.95);
+                color: #f9fafb;
+            }
+            
+            h1 {
+                color: #f9fafb;
+            }
+            
+            .message {
+                color: #d1d5db;
+            }
+            
+            .features {
+                background: rgba(55, 65, 81, 0.5);
+            }
+            
+            .features h3 {
+                color: #f9fafb;
+            }
+            
+            .features li {
+                color: #d1d5db;
+            }
+            
+            .btn-secondary {
+                background: #374151;
+                color: #f9fafb;
+                border-color: #4b5563;
+            }
+            
+            .connection-info {
+                background: rgba(30, 64, 175, 0.1);
+                border-color: #3b82f6;
+                color: #93c5fd;
+            }
+            
+            .footer {
+                border-color: #4b5563;
+                color: #6b7280;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 3L1 9l4 2.18v6L12 21l7-3.82v-6l2-1.09V17h2V9L12 3zm6.82 6L12 12.72 5.18 9 12 5.28 18.82 9zM17 16l-5 2.72L7 16v-3.73L12 15l5-2.73V16z"/>
+            </svg>
+        </div>
+        
+        <h1>You're Offline</h1>
+        
+        <div class="status">
+            <div class="status-dot"></div>
+            <span>No internet connection</span>
+        </div>
+        
+        <p class="message">
+            Don't worry! School Nexus works offline too. You can still access cached content and your data will sync automatically when your connection is restored.
+        </p>
+        
+        <div class="features">
+            <h3>Available Offline</h3>
+            <ul>
+                <li>View cached dashboard data</li>
+                <li>Access previously loaded content</li>
+                <li>Use AI chat with cached responses</li>
+                <li>View downloaded documents</li>
+                <li>Check cached schedules and announcements</li>
+            </ul>
+        </div>
+        
+        <div class="actions">
+            <button class="btn" onclick="retryConnection()">
+                Try Again
+            </button>
+            <a href="/dashboard" class="btn btn-secondary">
+                Go to Dashboard
+            </a>
+        </div>
+        
+        <div class="connection-info">
+            <strong>💡 Tip:</strong> School Nexus will automatically sync your data and show you the latest information when your internet connection is restored.
+        </div>
+        
+        <div class="footer">
+            School Nexus • Progressive Web App<br>
+            Built to work anywhere, anytime
+        </div>
+    </div>
+
+    <script>
+        // Check connection status
+        function updateConnectionStatus() {
+            const statusEl = document.querySelector('.status span');
+            const statusDot = document.querySelector('.status-dot');
+            
+            if (navigator.onLine) {
+                statusEl.textContent = 'Connection restored!';
+                statusDot.style.background = '#10b981';
+                statusDot.style.animation = 'none';
+                
+                // Redirect to main app after a short delay
+                setTimeout(() => {
+                    window.location.href = '/dashboard';
+                }, 2000);
+            } else {
+                statusEl.textContent = 'No internet connection';
+                statusDot.style.background = '#f59e0b';
+                statusDot.style.animation = 'pulse 2s infinite';
+            }
+        }
+        
+        // Retry connection
+        function retryConnection() {
+            const btn = document.querySelector('.btn');
+            const originalText = btn.textContent;
+            
+            btn.textContent = 'Checking...';
+            btn.disabled = true;
+            
+            // Simple connectivity check
+            fetch('/api/health', { 
+                method: 'HEAD',
+                cache: 'no-cache',
+                mode: 'no-cors'
+            })
+            .then(() => {
+                btn.textContent = 'Connected!';
+                setTimeout(() => {
+                    window.location.href = '/dashboard';
+                }, 1000);
+            })
+            .catch(() => {
+                btn.textContent = originalText;
+                btn.disabled = false;
+                
+                // Provide feedback
+                const message = document.createElement('div');
+                message.style.cssText = `
+                    background: #fee2e2;
+                    border: 1px solid #fca5a5;
+                    color: #991b1b;
+                    padding: 0.75rem;
+                    border-radius: 8px;
+                    margin-top: 1rem;
+                    font-size: 0.9rem;
+                `;
+                message.textContent = 'Still offline. Please check your internet connection.';
+                
+                document.querySelector('.actions').appendChild(message);
+                
+                setTimeout(() => {
+                    message.remove();
+                }, 3000);
+            });
+        }
+        
+        // Listen for connection changes
+        window.addEventListener('online', updateConnectionStatus);
+        window.addEventListener('offline', updateConnectionStatus);
+        
+        // Listen for service worker updates
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.addEventListener('message', event => {
+                if (event.data.type === 'BACK_ONLINE') {
+                    updateConnectionStatus();
+                }
+            });
+        }
+        
+        // Initialize status
+        updateConnectionStatus();
+        
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'r' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                retryConnection();
+            }
+            
+            if (e.key === 'Escape') {
+                window.location.href = '/dashboard';
+            }
+        });
+        
+        // Analytics (if online)
+        if (navigator.onLine && typeof gtag !== 'undefined') {
+            gtag('event', 'offline_page_view', {
+                event_category: 'PWA',
+                event_label: 'User viewed offline page'
+            });
+        }
+    </script>
+</body>
+</html>

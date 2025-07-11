@@ -2,11 +2,11 @@ import uvicorn
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks, Request, Header, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, PlainTextResponse
 from contextlib import asynccontextmanager
 import asyncio
 from loguru import logger
@@ -15,13 +15,15 @@ from sentry_sdk.integrations.fastapi import FastApiIntegration
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy.orm import Session
 
 # Import our modules
 from .config import settings, get_settings
-from .database import init_database, close_database, get_db_service, db_service
+from .database import init_database, close_database, get_db_service, db_service, get_database
 from .models import *
 from .utils import *
 from .ai_service import ai_service
+from .bot_service import bot_service
 
 # Configure logging
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
@@ -684,6 +686,281 @@ async def get_system_stats(current_user: User = Depends(get_super_admin)):
         "ai_enabled": settings.ENABLE_AI_FEATURES,
         "voice_enabled": settings.ENABLE_VOICE_FEATURES
     }
+
+
+# Bot Webhook Endpoints
+@app.post("/webhook/telegram/{school_id}")
+async def telegram_webhook(
+    school_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_database)
+):
+    """Handle Telegram webhook updates"""
+    try:
+        # Verify school exists
+        school = db.query(School).filter(School.id == school_id).first()
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+        
+        # Parse update data
+        update_data = await request.json()
+        
+        # Process update in background
+        background_tasks.add_task(
+            bot_service.process_telegram_update, 
+            school_id, 
+            update_data
+        )
+        
+        return {"status": "ok"}
+        
+    except Exception as e:
+        logger.error(f"Telegram webhook error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Webhook processing failed")
+
+@app.post("/webhook/whatsapp/{school_id}")
+async def whatsapp_webhook(
+    school_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_hub_signature_256: str = Header(None),
+    db: Session = Depends(get_database)
+):
+    """Handle WhatsApp webhook updates"""
+    try:
+        # Verify school exists
+        school = db.query(School).filter(School.id == school_id).first()
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+        
+        # Get request body
+        body = await request.body()
+        
+        # Verify webhook signature if provided
+        if x_hub_signature_256:
+            app_secret = settings.WHATSAPP_APP_SECRET
+            if not bot_service.verify_whatsapp_webhook(
+                body.decode(), x_hub_signature_256, app_secret
+            ):
+                raise HTTPException(status_code=403, detail="Invalid signature")
+        
+        # Parse update data
+        update_data = await request.json()
+        
+        # Check if it's a verification request
+        if "hub.mode" in update_data and update_data["hub.mode"] == "subscribe":
+            verify_token = update_data.get("hub.verify_token")
+            if verify_token == settings.WHATSAPP_VERIFY_TOKEN:
+                return PlainTextResponse(update_data.get("hub.challenge", ""))
+            else:
+                raise HTTPException(status_code=403, detail="Invalid verify token")
+        
+        # Process update in background
+        background_tasks.add_task(
+            bot_service.process_whatsapp_update,
+            school_id,
+            update_data
+        )
+        
+        return {"status": "ok"}
+        
+    except Exception as e:
+        logger.error(f"WhatsApp webhook error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Webhook processing failed")
+
+@app.get("/webhook/whatsapp/{school_id}")
+async def whatsapp_webhook_verify(
+    school_id: str,
+    hub_mode: str = Query(alias="hub.mode"),
+    hub_verify_token: str = Query(alias="hub.verify_token"),
+    hub_challenge: str = Query(alias="hub.challenge"),
+    db: Session = Depends(get_database)
+):
+    """Verify WhatsApp webhook"""
+    try:
+        # Verify school exists
+        school = db.query(School).filter(School.id == school_id).first()
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+        
+        if hub_mode == "subscribe" and hub_verify_token == settings.WHATSAPP_VERIFY_TOKEN:
+            return PlainTextResponse(hub_challenge)
+        else:
+            raise HTTPException(status_code=403, detail="Invalid verification")
+            
+    except Exception as e:
+        logger.error(f"WhatsApp webhook verification error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Verification failed")
+
+# Bot Management Endpoints
+@app.post("/api/bots/telegram/register")
+async def register_telegram_bot(
+    bot_data: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_database)
+):
+    """Register a Telegram bot for a school"""
+    try:
+        # Verify user permissions
+        if current_user.role not in ["super_admin", "school_admin"]:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        school_id = bot_data.get("school_id")
+        bot_token = bot_data.get("bot_token")
+        
+        if not school_id or not bot_token:
+            raise HTTPException(status_code=400, detail="Missing required fields")
+        
+        # Verify school access
+        if current_user.role == "school_admin" and current_user.school_id != school_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Register bot
+        success = bot_service.register_telegram_bot(school_id, bot_token)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to register bot")
+        
+        # Set webhook
+        webhook_url = f"{settings.BASE_URL}/webhook/telegram/{school_id}"
+        telegram_bot = bot_service.telegram_bots[school_id]
+        await telegram_bot.set_webhook(webhook_url)
+        
+        # Update school settings
+        school = db.query(School).filter(School.id == school_id).first()
+        if school:
+            school.telegram_bot_token = bot_token
+            school.telegram_enabled = True
+            db.commit()
+        
+        return {"message": "Telegram bot registered successfully", "webhook_url": webhook_url}
+        
+    except Exception as e:
+        logger.error(f"Telegram bot registration error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Registration failed")
+
+@app.post("/api/bots/whatsapp/register")
+async def register_whatsapp_bot(
+    bot_data: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_database)
+):
+    """Register a WhatsApp bot for a school"""
+    try:
+        # Verify user permissions
+        if current_user.role not in ["super_admin", "school_admin"]:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        school_id = bot_data.get("school_id")
+        access_token = bot_data.get("access_token")
+        phone_number_id = bot_data.get("phone_number_id")
+        
+        if not all([school_id, access_token, phone_number_id]):
+            raise HTTPException(status_code=400, detail="Missing required fields")
+        
+        # Verify school access
+        if current_user.role == "school_admin" and current_user.school_id != school_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Register bot
+        success = bot_service.register_whatsapp_bot(school_id, access_token, phone_number_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to register bot")
+        
+        # Update school settings
+        school = db.query(School).filter(School.id == school_id).first()
+        if school:
+            school.whatsapp_access_token = access_token
+            school.whatsapp_phone_id = phone_number_id
+            school.whatsapp_enabled = True
+            db.commit()
+        
+        webhook_url = f"{settings.BASE_URL}/webhook/whatsapp/{school_id}"
+        
+        return {
+            "message": "WhatsApp bot registered successfully",
+            "webhook_url": webhook_url,
+            "verify_token": settings.WHATSAPP_VERIFY_TOKEN
+        }
+        
+    except Exception as e:
+        logger.error(f"WhatsApp bot registration error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Registration failed")
+
+@app.post("/api/bots/broadcast")
+async def send_broadcast_message(
+    broadcast_data: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_database)
+):
+    """Send broadcast message via bots"""
+    try:
+        # Verify user permissions
+        if current_user.role not in ["super_admin", "school_admin"]:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        school_id = broadcast_data.get("school_id")
+        message = broadcast_data.get("message")
+        platform = broadcast_data.get("platform", "both")  # telegram, whatsapp, both
+        user_roles = broadcast_data.get("user_roles")  # Optional filter by roles
+        
+        if not school_id or not message:
+            raise HTTPException(status_code=400, detail="Missing required fields")
+        
+        # Verify school access
+        if current_user.role == "school_admin" and current_user.school_id != school_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Send broadcast
+        await bot_service.send_broadcast_message(
+            school_id, message, platform, user_roles
+        )
+        
+        return {"message": "Broadcast sent successfully"}
+        
+    except Exception as e:
+        logger.error(f"Broadcast error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Broadcast failed")
+
+@app.get("/api/bots/status/{school_id}")
+async def get_bot_status(
+    school_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_database)
+):
+    """Get bot status for a school"""
+    try:
+        # Verify user permissions
+        if current_user.role not in ["super_admin", "school_admin"]:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Verify school access
+        if current_user.role == "school_admin" and current_user.school_id != school_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Get bot status
+        telegram_active = school_id in bot_service.telegram_bots
+        whatsapp_active = school_id in bot_service.whatsapp_bots
+        
+        # Get school settings
+        school = db.query(School).filter(School.id == school_id).first()
+        
+        return {
+            "telegram": {
+                "enabled": school.telegram_enabled if school else False,
+                "active": telegram_active,
+                "webhook_url": f"{settings.BASE_URL}/webhook/telegram/{school_id}" if telegram_active else None
+            },
+            "whatsapp": {
+                "enabled": school.whatsapp_enabled if school else False,
+                "active": whatsapp_active,
+                "webhook_url": f"{settings.BASE_URL}/webhook/whatsapp/{school_id}" if whatsapp_active else None
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Bot status error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get status")
 
 
 if __name__ == "__main__":
