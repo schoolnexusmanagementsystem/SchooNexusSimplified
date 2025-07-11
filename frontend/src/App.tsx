@@ -13,6 +13,8 @@ import { StudentDashboard } from './components/dashboards/StudentDashboard';
 import { LoadingScreen } from './components/LoadingScreen';
 import { UserRole } from './types';
 import './App.css';
+import { Dashboard } from './components/Dashboard';
+import { DocumentGenerator } from './components/DocumentGenerator';
 
 // Create a client
 const queryClient = new QueryClient({
@@ -71,10 +73,23 @@ const AppContent: React.FC = () => {
         path="/" 
         element={<Navigate to="/dashboard" replace />} 
       />
-      <Route 
-        path="/dashboard" 
-        element={<DashboardRouter user={user} />} 
-      />
+      {/* Protected Routes */}
+      <Route path="/dashboard" element={
+        <ProtectedRoute>
+          <DashboardLayout>
+            <Dashboard />
+          </DashboardLayout>
+        </ProtectedRoute>
+      } />
+      
+      <Route path="/documents" element={
+        <ProtectedRoute>
+          <DashboardLayout>
+            <DocumentGenerator />
+          </DashboardLayout>
+        </ProtectedRoute>
+      } />
+
       <Route 
         path="/profile" 
         element={<div>Profile Page (Coming Soon)</div>} 
