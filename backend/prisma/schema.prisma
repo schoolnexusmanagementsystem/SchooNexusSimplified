@@ -1,0 +1,367 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Multi-tenant architecture - all data scoped by school_id
+model School {
+  id                String   @id @default(cuid())
+  name              String
+  email             String   @unique
+  phone             String?
+  address           String?
+  logoUrl           String?
+  status            SchoolStatus @default(ACTIVE)
+  subscriptionPlan  SubscriptionPlan @default(BASIC)
+  academicYear      String?
+  timezone          String @default("UTC")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  users             User[]
+  students          Student[]
+  staff             Staff[]
+  classes           Class[]
+  subjects          Subject[]
+  aiInteractions    AIInteraction[]
+  documents         Document[]
+  notifications     Notification[]
+  botConfigs        BotConfig[]
+
+  @@map("schools")
+}
+
+model User {
+  id                String   @id @default(cuid())
+  email             String   @unique
+  passwordHash      String
+  fullName          String
+  role              UserRole
+  schoolId          String?
+  isActive          Boolean  @default(true)
+  lastLoginAt       DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  school            School?  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  profile           UserProfile?
+  notifications     Notification[]
+  aiInteractions    AIInteraction[]
+
+  @@map("users")
+}
+
+model UserProfile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  avatarUrl         String?
+  phone             String?
+  dateOfBirth       DateTime?
+  gender            Gender?
+  address           String?
+  emergencyContact  String?
+  preferences       Json?    // Theme, notifications, etc.
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+model Student {
+  id                String   @id @default(cuid())
+  studentId         String   @unique // School-specific student ID
+  schoolId          String
+  userId            String   @unique
+  grade             String?
+  section           String?
+  enrollmentDate    DateTime @default(now())
+  graduationDate    DateTime?
+  parentId          String?
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  school            School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent            Student? @relation("StudentParent", fields: [parentId], references: [id])
+  children          Student[] @relation("StudentParent")
+  enrollments       Enrollment[]
+  attendance        Attendance[]
+  grades            Grade[]
+
+  @@map("students")
+}
+
+model Staff {
+  id                String   @id @default(cuid())
+  staffId           String   @unique // School-specific staff ID
+  schoolId          String
+  userId            String   @unique
+  department        String?
+  position          String?
+  hireDate          DateTime @default(now())
+  salary            Decimal?
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  school            School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  classes           Class[]
+  subjects          Subject[]
+
+  @@map("staff")
+}
+
+model Class {
+  id                String   @id @default(cuid())
+  name              String
+  schoolId          String
+  teacherId         String?
+  grade             String?
+  section           String?
+  academicYear      String?
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  school            School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  teacher           Staff?   @relation(fields: [teacherId], references: [id])
+  enrollments       Enrollment[]
+  subjects          Subject[]
+
+  @@map("classes")
+}
+
+model Subject {
+  id                String   @id @default(cuid())
+  name              String
+  code              String
+  schoolId          String
+  teacherId         String?
+  classId           String?
+  description       String?
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  school            School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  teacher           Staff?   @relation(fields: [teacherId], references: [id])
+  class             Class?   @relation(fields: [classId], references: [id])
+  grades            Grade[]
+
+  @@map("subjects")
+}
+
+model Enrollment {
+  id                String   @id @default(cuid())
+  studentId         String
+  classId           String
+  enrollmentDate    DateTime @default(now())
+  status            EnrollmentStatus @default(ACTIVE)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  student           Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  class             Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, classId])
+  @@map("enrollments")
+}
+
+model Attendance {
+  id                String   @id @default(cuid())
+  studentId         String
+  date              DateTime
+  status            AttendanceStatus
+  reason            String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  student           Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, date])
+  @@map("attendance")
+}
+
+model Grade {
+  id                String   @id @default(cuid())
+  studentId         String
+  subjectId         String
+  term              String
+  academicYear      String
+  score             Decimal
+  maxScore          Decimal @default(100)
+  grade             String?
+  remarks           String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  student           Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subject           Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, subjectId, term, academicYear])
+  @@map("grades")
+}
+
+model AIInteraction {
+  id                String   @id @default(cuid())
+  userId            String
+  schoolId          String
+  query             String
+  response          String
+  responseType      AIResponseType
+  metadata          Json?
+  createdAt         DateTime @default(now())
+
+  // Relations
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  school            School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@map("ai_interactions")
+}
+
+model Document {
+  id                String   @id @default(cuid())
+  schoolId          String
+  type              DocumentType
+  title             String
+  content           String // Template content
+  variables         Json?   // Template variables
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  school            School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@map("documents")
+}
+
+model Notification {
+  id                String   @id @default(cuid())
+  schoolId          String
+  userId            String?
+  title             String
+  message           String
+  type              NotificationType
+  isRead            Boolean  @default(false)
+  metadata          Json?
+  createdAt         DateTime @default(now())
+
+  // Relations
+  school            School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  user              User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model BotConfig {
+  id                String   @id @default(cuid())
+  schoolId          String   @unique
+  platform          BotPlatform
+  token             String
+  webhookUrl        String?
+  isActive          Boolean  @default(true)
+  settings          Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  school            School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@map("bot_configs")
+}
+
+// Enums
+enum UserRole {
+  SUPER_ADMIN
+  SCHOOL_ADMIN
+  STAFF
+  STUDENT
+  PARENT
+  VISITOR
+}
+
+enum SchoolStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum SubscriptionPlan {
+  BASIC
+  PREMIUM
+  ENTERPRISE
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  PREFER_NOT_TO_SAY
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  INACTIVE
+  GRADUATED
+  TRANSFERRED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+enum AIResponseType {
+  TEXT
+  TABLE
+  CHART
+  DOCUMENT
+  IMAGE
+}
+
+enum DocumentType {
+  ID_CARD
+  REPORT_CARD
+  EXAM_CARD
+  ADMISSION_LETTER
+  CERTIFICATE
+  TRANSCRIPT
+  OTHER
+}
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+  SYSTEM
+}
+
+enum BotPlatform {
+  TELEGRAM
+  WHATSAPP
+}
